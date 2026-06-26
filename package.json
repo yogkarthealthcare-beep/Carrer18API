@@ -1,0 +1,35 @@
+{
+  "name": "careers18-api",
+  "version": "2.0.0",
+  "description": "Careers18.com — Node.js REST API with JWT, OAuth, Payments",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "psql $DATABASE_URL -f migrations/002_full_schema.sql",
+    "seed": "psql $DATABASE_URL -f seed_master_data.sql"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "express-validator": "^7.0.1",
+    "helmet": "^7.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "nodemailer": "^9.0.1",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "passport-linkedin-oauth2": "^2.0.0",
+    "pg": "^8.11.3",
+    "postgres": "^3.4.9",
+    "razorpay": "^2.9.2",
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
