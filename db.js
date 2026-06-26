@@ -13,5 +13,10 @@ const sql = postgres(connectionString, {
   ssl: 'require',
 });
 
+sql.query = async (text, params = []) => {
+  const rows = await sql.unsafe(text, params);
+  return { rows };
+};
+
 module.exports = sql;
 module.exports.default = sql;
