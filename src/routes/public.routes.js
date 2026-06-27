@@ -16,7 +16,7 @@ router.get('/jobs', async (req, res, next) => {
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const params = [];
-    let where = `WHERE j.status = 'active' AND j.expires_at > NOW()`;
+    let where = `WHERE j.status = 'active'`;
 
     if (search) {
       params.push(`%${search}%`);
@@ -36,18 +36,18 @@ router.get('/jobs', async (req, res, next) => {
     }
     if (job_type) {
       params.push(job_type);
-      where += ` AND j.job_type = $${params.length}`;
+      where += ` AND j.employment_type = $${params.length}`;
     }
     if (is_remote === 'true') {
       where += ` AND j.is_remote = true`;
     }
     if (experience_min) {
       params.push(experience_min);
-      where += ` AND j.experience_min >= $${params.length}`;
+      where += ` AND j.experience_required >= $${params.length}`;
     }
     if (experience_max) {
       params.push(experience_max);
-      where += ` AND j.experience_max <= $${params.length}`;
+      where += ` AND j.experience_required <= $${params.length}`;
     }
     if (salary_min) {
       params.push(salary_min);
@@ -63,13 +63,14 @@ router.get('/jobs', async (req, res, next) => {
 
     const query = `
       SELECT
-        j.id, j.title, j.location, j.job_type, j.is_remote,
-        j.experience_min, j.experience_max, j.salary_min, j.salary_max,
-        j.salary_currency, j.description, j.created_at, j.expires_at,
-        c.id AS company_id, c.name AS company_name,
+        j.id, j.title, j.location, j.employment_type AS job_type, j.is_remote,
+        COALESCE(j.experience_required, 0) AS experience_min, j.experience_required AS experience_max,
+        j.salary_min, j.salary_max, j.salary_currency, j.description, j.created_at,
+        j.closed_at AS expires_at, j.number_of_positions AS openings, j.view_count AS views,
+        c.id AS company_id, c.company_name AS company_name,
         c.logo_url AS company_logo, c.is_verified AS company_verified,
         i.name AS industry_name, jc.name AS category_name
-      FROM jobs j
+      FROM job_postings j
       LEFT JOIN companies c ON c.id = j.company_id
       LEFT JOIN industries i ON i.id = j.industry_id
       LEFT JOIN job_categories jc ON jc.id = j.category_id
@@ -78,7 +79,7 @@ router.get('/jobs', async (req, res, next) => {
       LIMIT $${params.length - 1} OFFSET $${params.length}
     `;
 
-    const countQuery = `SELECT COUNT(*) FROM jobs j ${where}`;
+    const countQuery = `SELECT COUNT(*) FROM job_postings j ${where}`;
     const countParams = params.slice(0, -2);
 
     const [jobs, countResult] = await Promise.all([
@@ -88,6 +89,9 @@ router.get('/jobs', async (req, res, next) => {
 
     return sendSuccess(res, {
       jobs: jobs.rows,
+      total: parseInt(countResult.rows[0].count),
+      page: parseInt(page),
+      limit: parseInt(limit),
       pagination: {
         total: parseInt(countResult.rows[0].count),
         page: parseInt(page),
@@ -105,19 +109,21 @@ router.get('/jobs/:id', async (req, res, next) => {
   try {
     const result = await db.query(
       `SELECT
-         j.*, c.name AS company_name, c.logo_url, c.website, c.description AS company_description,
-         c.size AS company_size, c.is_verified,
+         j.id, j.title, j.description, j.qualification_required AS requirements,
+         j.location, j.employment_type AS job_type, j.is_remote,
+         COALESCE(j.experience_required, 0) AS experience_min,
+         j.experience_required AS experience_max,
+         j.salary_min, j.salary_max, j.salary_currency,
+         j.number_of_positions AS openings, j.status, j.is_featured,
+         j.view_count AS views, j.created_at, j.updated_at,
+         c.company_name, c.logo_url, c.website_url AS website, c.description AS company_description,
+         c.company_size, c.is_verified,
          i.name AS industry_name, jc.name AS category_name,
-         COALESCE(
-           json_agg(DISTINCT jsonb_build_object('id', s.id, 'name', s.name, 'category', s.category))
-           FILTER (WHERE s.id IS NOT NULL), '[]'
-         ) AS required_skills
-       FROM jobs j
+         '[]'::json AS required_skills
+       FROM job_postings j
        LEFT JOIN companies c ON c.id = j.company_id
        LEFT JOIN industries i ON i.id = j.industry_id
        LEFT JOIN job_categories jc ON jc.id = j.category_id
-       LEFT JOIN job_skills js ON js.job_id = j.id
-       LEFT JOIN skills s ON s.id = js.skill_id
        WHERE j.id = $1 AND j.status = 'active'
        GROUP BY j.id, c.id, i.id, jc.id`,
       [req.params.id]
@@ -128,7 +134,7 @@ router.get('/jobs/:id', async (req, res, next) => {
     }
 
     // Increment view count
-    await db.query(`UPDATE jobs SET views = views + 1 WHERE id = $1`, [req.params.id]);
+    await db.query(`UPDATE job_postings SET view_count = COALESCE(view_count, 0) + 1 WHERE id = $1`, [req.params.id]);
 
     return sendSuccess(res, result.rows[0]);
   } catch (err) {
@@ -142,11 +148,11 @@ router.get('/companies', async (req, res, next) => {
     const { search, industry_id, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const params = [];
-    let where = `WHERE c.is_active = true`;
+    let where = `WHERE 1 = 1`;
 
     if (search) {
       params.push(`%${search}%`);
-      where += ` AND c.name ILIKE $${params.length}`;
+      where += ` AND c.company_name ILIKE $${params.length}`;
     }
     if (industry_id) {
       params.push(industry_id);
@@ -156,12 +162,13 @@ router.get('/companies', async (req, res, next) => {
     params.push(parseInt(limit), offset);
 
     const result = await db.query(
-      `SELECT c.id, c.name, c.logo_url, c.website, c.size, c.is_verified,
+      `SELECT c.id, c.company_name AS name, c.logo_url, c.website_url AS website,
+              c.company_size AS size, c.headquarters_location AS location, c.is_verified,
               i.name AS industry_name,
               COUNT(DISTINCT j.id) AS active_jobs
        FROM companies c
        LEFT JOIN industries i ON i.id = c.industry_id
-       LEFT JOIN jobs j ON j.company_id = c.id AND j.status = 'active'
+       LEFT JOIN job_postings j ON j.company_id = c.id AND j.status = 'active'
        ${where}
        GROUP BY c.id, i.name
        ORDER BY c.is_verified DESC, active_jobs DESC
@@ -183,7 +190,7 @@ router.get('/companies/:id', async (req, res, next) => {
               COUNT(DISTINCT j.id) FILTER (WHERE j.status = 'active') AS active_jobs
        FROM companies c
        LEFT JOIN industries i ON i.id = c.industry_id
-       LEFT JOIN jobs j ON j.company_id = c.id
+       LEFT JOIN job_postings j ON j.company_id = c.id
        WHERE c.id = $1
        GROUP BY c.id, i.name`,
       [req.params.id]
@@ -213,13 +220,16 @@ router.get('/search', async (req, res, next) => {
     const [jobs, companies] = await Promise.all([
       db.query(
         `SELECT id, title, location, job_type, created_at, 'job' AS type
-         FROM jobs WHERE status = 'active' AND (title ILIKE $1 OR description ILIKE $1)
+         FROM (
+           SELECT id, title, location, employment_type AS job_type, created_at, status, description
+           FROM job_postings
+         ) jobs WHERE status = 'active' AND (title ILIKE $1 OR description ILIKE $1)
          LIMIT 5`,
         [pattern]
       ),
       db.query(
-        `SELECT id, name, logo_url, 'company' AS type
-         FROM companies WHERE is_active = true AND name ILIKE $1 LIMIT 5`,
+        `SELECT id, company_name AS name, logo_url, 'company' AS type
+         FROM companies WHERE company_name ILIKE $1 LIMIT 5`,
         [pattern]
       ),
     ]);
@@ -238,8 +248,8 @@ router.get('/stats', async (req, res, next) => {
   try {
     const result = await db.query(
       `SELECT
-         (SELECT COUNT(*) FROM jobs WHERE status = 'active') AS active_jobs,
-         (SELECT COUNT(*) FROM companies WHERE is_active = true) AS companies,
+         (SELECT COUNT(*) FROM job_postings WHERE status = 'active') AS active_jobs,
+         (SELECT COUNT(*) FROM companies) AS companies,
          (SELECT COUNT(*) FROM users WHERE role = 'candidate') AS candidates,
          (SELECT COUNT(*) FROM users WHERE role = 'employer') AS employers`
     );

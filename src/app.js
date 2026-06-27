@@ -17,9 +17,32 @@ const { errorHandler, notFound } = require('./middleware/error.middleware');
 
 const app = express();
 
+const defaultAllowedOrigins = [
+  'http://localhost:4200',
+  'https://carrer18-8631e.web.app',
+  'https://carrer18-8631e.firebaseapp.com'
+];
+
+const envAllowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.FRONTEND_URLS
+]
+  .filter(Boolean)
+  .flatMap(value => value.split(','))
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...envAllowedOrigins])];
+
 // Security & Parsing
 app.use(helmet());
-app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true })); // needed for CCAvenue POST callback
 app.use(passport.initialize());
