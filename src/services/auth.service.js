@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const { generateTokenPair, verifyRefreshToken } = require('../utils/jwt');
 const { generateOTP, getOTPExpiry } = require('../utils/otp');
+const { sendOTPEmail, sendWelcomeEmail } = require('./email.service');
 
 const SALT_ROUNDS = 12;
 
@@ -44,8 +45,10 @@ const register = async ({ email, password, role = 'candidate' }) => {
     [uuidv4(), user.id, otp, expiresAt]
   );
 
-  // TODO: Send OTP via email (AWS SES / Nodemailer)
-  console.log(`[OTP] Email verification OTP for ${email}: ${otp}`);
+  await sendOTPEmail({ to: email, otp, type: 'email_verification' });
+  sendWelcomeEmail({ to: email, role }).catch((err) => {
+    console.error('[EMAIL WELCOME FAILED]', err.message);
+  });
 
   return {
     user: { id: user.id, email: user.email, role: user.role },
@@ -240,8 +243,7 @@ const forgotPassword = async ({ email }) => {
     [uuidv4(), user.id, otp, expiresAt]
   );
 
-  // TODO: Send OTP via email
-  console.log(`[OTP] Password reset OTP for ${email}: ${otp}`);
+  await sendOTPEmail({ to: email, otp, type: 'password_reset' });
 
   return { message: 'If this email exists, an OTP has been sent.' };
 };

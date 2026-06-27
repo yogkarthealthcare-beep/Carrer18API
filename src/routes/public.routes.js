@@ -69,6 +69,8 @@ router.get('/jobs', async (req, res, next) => {
         j.closed_at AS expires_at, j.number_of_positions AS openings, j.view_count AS views,
         c.id AS company_id, c.company_name AS company_name,
         c.logo_url AS company_logo, c.is_verified AS company_verified,
+        c.address AS company_address, c.city AS company_city, c.state AS company_state,
+        c.country AS company_country, c.postal_code AS company_postal_code,
         i.name AS industry_name, jc.name AS category_name
       FROM job_postings j
       LEFT JOIN companies c ON c.id = j.company_id
@@ -118,6 +120,8 @@ router.get('/jobs/:id', async (req, res, next) => {
          j.view_count AS views, j.created_at, j.updated_at,
          c.company_name, c.logo_url, c.website_url AS website, c.description AS company_description,
          c.company_size, c.is_verified,
+         c.address AS company_address, c.city AS company_city, c.state AS company_state,
+         c.country AS company_country, c.postal_code AS company_postal_code,
          i.name AS industry_name, jc.name AS category_name,
          '[]'::json AS required_skills
        FROM job_postings j
@@ -163,19 +167,65 @@ router.get('/companies', async (req, res, next) => {
 
     const result = await db.query(
       `SELECT c.id, c.company_name AS name, c.logo_url, c.website_url AS website,
-              c.company_size AS size, c.headquarters_location AS location, c.is_verified,
+              c.company_size AS size, c.headquarters_location AS location,
+              c.address, c.landmark, c.city, c.state, c.country, c.postal_code,
+              c.is_verified,
               i.name AS industry_name,
-              COUNT(DISTINCT j.id) AS active_jobs
+              COUNT(DISTINCT j.id) AS active_jobs,
+              COALESCE(rs.average_rating, 0) AS average_rating,
+              COALESCE(rs.total_reviews, 0) AS total_reviews
        FROM companies c
        LEFT JOIN industries i ON i.id = c.industry_id
        LEFT JOIN job_postings j ON j.company_id = c.id AND j.status = 'active'
+       LEFT JOIN company_rating_summary rs ON rs.company_id = c.id
        ${where}
-       GROUP BY c.id, i.name
-       ORDER BY c.is_verified DESC, active_jobs DESC
+       GROUP BY c.id, i.name, rs.average_rating, rs.total_reviews, rs.review_quality
+       ORDER BY COALESCE(rs.average_rating, 0) DESC, COALESCE(rs.total_reviews, 0) DESC, active_jobs DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
 
+    const countResult = await db.query(`SELECT COUNT(*) FROM companies c ${where}`, params.slice(0, -2));
+
+    return sendSuccess(res, {
+      companies: result.rows,
+      total: parseInt(countResult.rows[0].count),
+      page: parseInt(page),
+      limit: parseInt(limit),
+      pagination: {
+        total: parseInt(countResult.rows[0].count),
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(parseInt(countResult.rows[0].count) / parseInt(limit)),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/companies/top-rated', async (req, res, next) => {
+  try {
+    const { limit = 8 } = req.query;
+    const result = await db.query(
+      `SELECT c.id, c.company_name AS name, c.logo_url, c.company_size AS size,
+              c.headquarters_location AS location, c.city, c.state,
+              i.name AS industry_name,
+              COUNT(DISTINCT j.id) AS active_jobs,
+              COALESCE(rs.average_rating, 0) AS average_rating,
+              COALESCE(rs.total_reviews, 0) AS total_reviews
+       FROM companies c
+       LEFT JOIN industries i ON i.id = c.industry_id
+       LEFT JOIN job_postings j ON j.company_id = c.id AND j.status = 'active'
+       LEFT JOIN company_rating_summary rs ON rs.company_id = c.id
+       GROUP BY c.id, i.name, rs.average_rating, rs.total_reviews, rs.review_quality
+       ORDER BY COALESCE(rs.average_rating, 0) DESC,
+                COALESCE(rs.total_reviews, 0) DESC,
+                COUNT(DISTINCT j.id) DESC,
+                c.company_name ASC
+       LIMIT $1`,
+      [parseInt(limit)]
+    );
     return sendSuccess(res, result.rows);
   } catch (err) {
     next(err);
@@ -187,12 +237,17 @@ router.get('/companies/:id', async (req, res, next) => {
   try {
     const result = await db.query(
       `SELECT c.*, i.name AS industry_name,
-              COUNT(DISTINCT j.id) FILTER (WHERE j.status = 'active') AS active_jobs
+              c.company_name AS name, c.website_url AS website,
+              c.company_size AS size, c.headquarters_location AS location,
+              COUNT(DISTINCT j.id) FILTER (WHERE j.status = 'active') AS active_jobs,
+              COALESCE(rs.average_rating, 0) AS average_rating,
+              COALESCE(rs.total_reviews, 0) AS total_reviews
        FROM companies c
        LEFT JOIN industries i ON i.id = c.industry_id
        LEFT JOIN job_postings j ON j.company_id = c.id
+       LEFT JOIN company_rating_summary rs ON rs.company_id = c.id
        WHERE c.id = $1
-       GROUP BY c.id, i.name`,
+       GROUP BY c.id, i.name, rs.average_rating, rs.total_reviews`,
       [req.params.id]
     );
 
@@ -201,6 +256,26 @@ router.get('/companies/:id', async (req, res, next) => {
     }
 
     return sendSuccess(res, result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/companies/:id/reviews', async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT r.id, r.overall_rating, r.work_culture, r.salary_benefits,
+              r.career_growth, r.management, r.work_life_balance,
+              r.interview_experience, r.review_text, r.employer_response,
+              r.created_at,
+              COALESCE(NULLIF(TRIM(CONCAT(p.first_name, ' ', p.last_name)), ''), 'Career18 user') AS reviewer_name
+       FROM company_reviews r
+       LEFT JOIN user_profiles p ON p.user_id = r.user_id
+       WHERE r.company_id = $1 AND r.status = 'approved'
+       ORDER BY r.created_at DESC`,
+      [req.params.id]
+    );
+    return sendSuccess(res, result.rows);
   } catch (err) {
     next(err);
   }

@@ -12,6 +12,7 @@ const masterRoutes   = require('./routes/master.routes');
 const publicRoutes   = require('./routes/public.routes');
 const employeeRoutes = require('./routes/employee.routes');
 const employerRoutes = require('./routes/employer.routes');
+const adminRoutes    = require('./routes/admin.routes');
 const paymentRoutes  = require('./routes/payment.routes');
 const { errorHandler, notFound } = require('./middleware/error.middleware');
 
@@ -67,6 +68,7 @@ app.use('/api/v1/master',   masterRoutes);
 app.use('/api/v1/public',   publicRoutes);
 app.use('/api/v1/employee', employeeRoutes);
 app.use('/api/v1/employer', employerRoutes);
+app.use('/api/v1/admin',    adminRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 
 // Error handling

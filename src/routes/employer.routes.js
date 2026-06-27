@@ -12,7 +12,7 @@ router.use(authorize('employer', 'recruiter', 'admin', 'super_admin'));
 router.get('/dashboard', async (req, res, next) => {
   try {
     const company = await db.query(
-      `SELECT id FROM companies WHERE owner_id = $1 LIMIT 1`, [req.user.id]
+      `SELECT id FROM companies WHERE user_id = $1 LIMIT 1`, [req.user.id]
     );
     const companyId = company.rows[0]?.id;
 
@@ -53,9 +53,12 @@ router.get('/dashboard', async (req, res, next) => {
 router.get('/company', async (req, res, next) => {
   try {
     const result = await db.query(
-      `SELECT c.*, i.name AS industry_name FROM companies c
+      `SELECT c.*, c.company_name AS name, c.website_url AS website,
+              c.company_size AS size, c.headquarters_location AS location,
+              i.name AS industry_name
+       FROM companies c
        LEFT JOIN industries i ON i.id = c.industry_id
-       WHERE c.owner_id = $1`,
+       WHERE c.user_id = $1`,
       [req.user.id]
     );
     return sendSuccess(res, result.rows[0] || null);
@@ -66,20 +69,26 @@ router.post('/company', async (req, res, next) => {
   try {
     const {
       name, description, website, size, founded_year,
-      industry_id, location, linkedin_url, logo_url,
+      industry_id, location, linkedin_url, logo_url, banner_url,
+      email, hr_contact_number, address, landmark, city, state, country, postal_code,
     } = req.body;
 
-    const existing = await db.query(`SELECT id FROM companies WHERE owner_id = $1`, [req.user.id]);
+    const existing = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
     if (existing.rows.length > 0) {
       return sendError(res, 'Company profile already exists. Use PUT to update.', 409);
     }
 
     const result = await db.query(
-      `INSERT INTO companies (id, owner_id, name, description, website, size, founded_year,
-         industry_id, location, linkedin_url, logo_url, is_active, is_verified, created_at, updated_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, false, NOW(), NOW())
+      `INSERT INTO companies (id, user_id, company_name, description, website_url, company_size, founded_year,
+         industry_id, headquarters_location, logo_url, banner_url, email, hr_contact_number,
+         address, landmark, city, state, country, postal_code, is_active, is_verified, created_at, updated_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+         $11, $12, $13, $14, $15, $16, $17, true, false, NOW(), NOW())
        RETURNING *`,
-      [req.user.id, name, description, website, size, founded_year, industry_id, location, linkedin_url, logo_url]
+      [req.user.id, name, description, website, size, founded_year, industry_id,
+       location || [city, state, country].filter(Boolean).join(', '), logo_url,
+       banner_url, email, hr_contact_number, address, landmark, city, state,
+       country || 'India', postal_code]
     );
     return sendSuccess(res, result.rows[0], 'Company created', 201);
   } catch (err) { next(err); }
@@ -89,14 +98,20 @@ router.put('/company', async (req, res, next) => {
   try {
     const {
       name, description, website, size, founded_year,
-      industry_id, location, linkedin_url, logo_url,
+      industry_id, location, linkedin_url, logo_url, banner_url,
+      email, hr_contact_number, address, landmark, city, state, country, postal_code,
     } = req.body;
 
     await db.query(
-      `UPDATE companies SET name=$1, description=$2, website=$3, size=$4, founded_year=$5,
-       industry_id=$6, location=$7, linkedin_url=$8, logo_url=$9, updated_at=NOW()
-       WHERE owner_id=$10`,
-      [name, description, website, size, founded_year, industry_id, location, linkedin_url, logo_url, req.user.id]
+      `UPDATE companies SET company_name=$1, description=$2, website_url=$3, company_size=$4, founded_year=$5,
+       industry_id=$6, headquarters_location=$7, logo_url=$8, banner_url=$9,
+       email=$10, hr_contact_number=$11, address=$12, landmark=$13, city=$14,
+       state=$15, country=$16, postal_code=$17, updated_at=NOW()
+       WHERE user_id=$18`,
+      [name, description, website, size, founded_year, industry_id,
+       location || [city, state, country].filter(Boolean).join(', '),
+       logo_url, banner_url, email, hr_contact_number, address, landmark, city,
+       state, country || 'India', postal_code, req.user.id]
     );
     return sendSuccess(res, null, 'Company updated');
   } catch (err) { next(err); }
@@ -105,7 +120,7 @@ router.put('/company', async (req, res, next) => {
 // ─── Jobs CRUD ────────────────────────────────────────────────────────────
 router.get('/jobs', async (req, res, next) => {
   try {
-    const company = await db.query(`SELECT id FROM companies WHERE owner_id = $1`, [req.user.id]);
+    const company = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
     if (!company.rows[0]) return sendError(res, 'Company not found', 404);
 
     const result = await db.query(
@@ -126,7 +141,7 @@ router.get('/jobs', async (req, res, next) => {
 
 router.post('/jobs', async (req, res, next) => {
   try {
-    const company = await db.query(`SELECT id FROM companies WHERE owner_id = $1`, [req.user.id]);
+    const company = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
     if (!company.rows[0]) return sendError(res, 'Create company profile first', 400);
 
     const {
@@ -160,7 +175,7 @@ router.post('/jobs', async (req, res, next) => {
 
 router.put('/jobs/:id', async (req, res, next) => {
   try {
-    const company = await db.query(`SELECT id FROM companies WHERE owner_id = $1`, [req.user.id]);
+    const company = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
     if (!company.rows[0]) return sendError(res, 'Company not found', 404);
 
     const {
@@ -183,7 +198,7 @@ router.put('/jobs/:id', async (req, res, next) => {
 
 router.delete('/jobs/:id', async (req, res, next) => {
   try {
-    const company = await db.query(`SELECT id FROM companies WHERE owner_id = $1`, [req.user.id]);
+    const company = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
     await db.query(
       `UPDATE jobs SET status = 'closed', updated_at = NOW() WHERE id = $1 AND company_id = $2`,
       [req.params.id, company.rows[0]?.id]
@@ -196,7 +211,7 @@ router.delete('/jobs/:id', async (req, res, next) => {
 router.get('/applications', async (req, res, next) => {
   try {
     const { job_id, status, page = 1, limit = 20 } = req.query;
-    const company = await db.query(`SELECT id FROM companies WHERE owner_id = $1`, [req.user.id]);
+    const company = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
     if (!company.rows[0]) return sendError(res, 'Company not found', 404);
 
     const params = [company.rows[0].id];
@@ -245,6 +260,22 @@ router.patch('/applications/:id/status', async (req, res, next) => {
 });
 
 // ─── Candidate search ─────────────────────────────────────────────────────
+router.patch('/reviews/:id/respond', async (req, res, next) => {
+  try {
+    const { response } = req.body;
+    const company = await db.query(`SELECT id FROM companies WHERE user_id = $1`, [req.user.id]);
+    if (!company.rows[0]) return sendError(res, 'Company not found', 404);
+
+    await db.query(
+      `UPDATE company_reviews
+       SET employer_response = $1, employer_responded_at = NOW(), updated_at = NOW()
+       WHERE id = $2 AND company_id = $3`,
+      [response, req.params.id, company.rows[0].id]
+    );
+    return sendSuccess(res, null, 'Review response saved');
+  } catch (err) { next(err); }
+});
+
 router.get('/candidates/search', async (req, res, next) => {
   try {
     const { skill_ids, location, experience_min, experience_max, page = 1, limit = 20 } = req.query;
