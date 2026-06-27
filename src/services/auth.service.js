@@ -1,10 +1,14 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../config/database');
 const { generateTokenPair, verifyRefreshToken } = require('../utils/jwt');
 const { generateOTP, getOTPExpiry } = require('../utils/otp');
 
 const SALT_ROUNDS = 12;
+
+const generatedPhone = () => `C18${Date.now().toString().slice(-12)}${Math.floor(Math.random() * 1000)}`;
+const tokenDigest = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 /**
  * Register a new user
@@ -22,10 +26,10 @@ const register = async ({ email, password, role = 'candidate' }) => {
   const id = uuidv4();
 
   const result = await db.query(
-    `INSERT INTO users (id, email, password_hash, role, status, email_verified, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'active', false, NOW(), NOW())
+    `INSERT INTO users (id, email, phone, password_hash, role, status, email_verified, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, 'active', false, NOW(), NOW())
      RETURNING id, email, role, status, email_verified, created_at`,
-    [id, email, passwordHash, role]
+    [id, email, generatedPhone(), passwordHash, role]
   );
 
   const user = result.rows[0];
@@ -35,9 +39,9 @@ const register = async ({ email, password, role = 'candidate' }) => {
   const expiresAt = getOTPExpiry();
 
   await db.query(
-    `INSERT INTO otp_verifications (id, user_id, email, otp_code, type, expires_at, created_at)
-     VALUES ($1, $2, $3, $4, 'email_verification', $5, NOW())`,
-    [uuidv4(), user.id, email, otp, expiresAt]
+    `INSERT INTO otp_verifications (id, user_id, otp_code, purpose, expires_at, created_at)
+     VALUES ($1, $2, $3, 'email_verification', $4, NOW())`,
+    [uuidv4(), user.id, otp, expiresAt]
   );
 
   // TODO: Send OTP via email (AWS SES / Nodemailer)
@@ -54,10 +58,11 @@ const register = async ({ email, password, role = 'candidate' }) => {
  */
 const verifyEmail = async ({ email, otp }) => {
   const result = await db.query(
-    `SELECT id, user_id, otp_code, expires_at, used
-     FROM otp_verifications
-     WHERE email = $1 AND type = 'email_verification' AND used = false
-     ORDER BY created_at DESC LIMIT 1`,
+    `SELECT v.id, v.user_id, v.otp_code, v.expires_at, v.is_used
+     FROM otp_verifications v
+     JOIN users u ON u.id = v.user_id
+     WHERE u.email = $1 AND v.purpose = 'email_verification' AND v.is_used = false
+     ORDER BY v.created_at DESC LIMIT 1`,
     [email]
   );
 
@@ -82,7 +87,7 @@ const verifyEmail = async ({ email, otp }) => {
   }
 
   // Mark OTP as used and verify email
-  await db.query(`UPDATE otp_verifications SET used = true WHERE id = $1`, [record.id]);
+  await db.query(`UPDATE otp_verifications SET is_used = true WHERE id = $1`, [record.id]);
   await db.query(
     `UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1`,
     [record.user_id]
@@ -127,9 +132,9 @@ const login = async ({ email, password }) => {
 
   // Store refresh token in DB
   await db.query(
-    `INSERT INTO refresh_tokens (id, user_id, token, expires_at, created_at)
+    `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at)
      VALUES ($1, $2, $3, NOW() + INTERVAL '7 days', NOW())`,
-    [uuidv4(), user.id, refreshToken]
+    [uuidv4(), user.id, tokenDigest(refreshToken)]
   );
 
   return {
@@ -159,8 +164,8 @@ const refreshTokens = async (token) => {
 
   // Check if token exists in DB (not revoked)
   const existing = await db.query(
-    `SELECT id, user_id FROM refresh_tokens WHERE token = $1 AND expires_at > NOW()`,
-    [token]
+    `SELECT id, user_id FROM refresh_tokens WHERE token_hash = $1 AND revoked = false AND expires_at > NOW()`,
+    [tokenDigest(token)]
   );
 
   if (existing.rows.length === 0) {
@@ -184,16 +189,16 @@ const refreshTokens = async (token) => {
   const user = userResult.rows[0];
 
   // Delete old refresh token (rotation)
-  await db.query(`DELETE FROM refresh_tokens WHERE token = $1`, [token]);
+  await db.query(`UPDATE refresh_tokens SET revoked = true WHERE token_hash = $1`, [tokenDigest(token)]);
 
   // Issue new token pair
   const tokenPayload = { id: user.id, email: user.email, role: user.role };
   const { accessToken, refreshToken: newRefreshToken } = generateTokenPair(tokenPayload);
 
   await db.query(
-    `INSERT INTO refresh_tokens (id, user_id, token, expires_at, created_at)
+    `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at)
      VALUES ($1, $2, $3, NOW() + INTERVAL '7 days', NOW())`,
-    [uuidv4(), user.id, newRefreshToken]
+    [uuidv4(), user.id, tokenDigest(newRefreshToken)]
   );
 
   return { accessToken, refreshToken: newRefreshToken };
@@ -203,7 +208,7 @@ const refreshTokens = async (token) => {
  * Logout — delete refresh token from DB
  */
 const logout = async (token) => {
-  await db.query(`DELETE FROM refresh_tokens WHERE token = $1`, [token]);
+  await db.query(`UPDATE refresh_tokens SET revoked = true WHERE token_hash = $1`, [tokenDigest(token)]);
   return { message: 'Logged out successfully' };
 };
 
@@ -224,15 +229,15 @@ const forgotPassword = async ({ email }) => {
 
   // Invalidate existing OTPs
   await db.query(
-    `UPDATE otp_verifications SET used = true
-     WHERE user_id = $1 AND type = 'password_reset' AND used = false`,
+    `UPDATE otp_verifications SET is_used = true
+     WHERE user_id = $1 AND purpose = 'password_reset' AND is_used = false`,
     [user.id]
   );
 
   await db.query(
-    `INSERT INTO otp_verifications (id, user_id, email, otp_code, type, expires_at, created_at)
-     VALUES ($1, $2, $3, $4, 'password_reset', $5, NOW())`,
-    [uuidv4(), user.id, email, otp, expiresAt]
+    `INSERT INTO otp_verifications (id, user_id, otp_code, purpose, expires_at, created_at)
+     VALUES ($1, $2, $3, 'password_reset', $4, NOW())`,
+    [uuidv4(), user.id, otp, expiresAt]
   );
 
   // TODO: Send OTP via email
@@ -248,7 +253,8 @@ const resetPassword = async ({ email, otp, newPassword }) => {
   const result = await db.query(
     `SELECT v.id, v.user_id, v.otp_code, v.expires_at
      FROM otp_verifications v
-     WHERE v.email = $1 AND v.type = 'password_reset' AND v.used = false
+     JOIN users u ON u.id = v.user_id
+     WHERE u.email = $1 AND v.purpose = 'password_reset' AND v.is_used = false
      ORDER BY v.created_at DESC LIMIT 1`,
     [email]
   );
@@ -275,14 +281,14 @@ const resetPassword = async ({ email, otp, newPassword }) => {
 
   const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
 
-  await db.query(`UPDATE otp_verifications SET used = true WHERE id = $1`, [record.id]);
+  await db.query(`UPDATE otp_verifications SET is_used = true WHERE id = $1`, [record.id]);
   await db.query(
     `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`,
     [passwordHash, record.user_id]
   );
 
   // Revoke all refresh tokens for this user (security)
-  await db.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [record.user_id]);
+  await db.query(`UPDATE refresh_tokens SET revoked = true WHERE user_id = $1`, [record.user_id]);
 
   return { message: 'Password reset successful. Please login.' };
 };
